@@ -1,6 +1,6 @@
 //! Executes `tests/vectors/molt_route_v1.json`: the recorded expectations for
 //! S5 (`detach_level`), S6 (`plan`), and S7 (`score`) from S10 of the molt
-//! v10 spec. Each case is rebuilt in Rust; the JSON file pins the expected
+//! v12 spec. Each case is rebuilt in Rust; the JSON file pins the expected
 //! outcomes, constants, and fingerprints.
 
 use pubky_molt::comparisons::{load_baselines, load_declared, run_comparison};

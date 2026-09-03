@@ -14,7 +14,7 @@
     "Multisig escrow variants (which reduce, not remove, the platform's view).",
     "Global passive observers (out of threat model, S0)."
   ],
-  "not_better_when": "Counterparties know whom they trust (bounded trust, not a leak); intermediaries learn adjacent endpoints; discovery of promoted claims depends on the indexers people choose to read.",
+  "not_better_when": "You need what the platform's total witness buys: escrow custody and dispute resolution between strangers with no prior relationship, marketplace liquidity and discovery (a counterparty must be found before any bilateral channel can exist), or custodial aggregation of reputation across many counterparties. Molt's bilateral evidence does not replace those functions; it removes the platform's witness only where counterparties already have a way to find and vet each other.",
   "joins_remaining_notes": [
     "Counterparties know whom they trust (bounded trust, not a leak).",
     "Intermediaries learn adjacent endpoints.",

@@ -1,8 +1,8 @@
 # DECISIONS
 
-Spec-ambiguity resolutions for the `pubky-molt` implementation of molt v10
+Spec-ambiguity resolutions for the `pubky-molt` implementation of molt v12
 sections S5, S6, S7, and S11. Each entry records the conservative reading
-chosen and why. Section numbers refer to the v10 plan.
+chosen and why. Section numbers refer to the v12 plan.
 
 ## Types and encoding
 
@@ -71,7 +71,9 @@ chosen and why. Section numbers refer to the v10 plan.
 
 11. **`DuplicateSegmentId`** fires when a hop opens an id that is currently
     open *or was used anywhere earlier on the route*. Re-opening a closed id
-    would make `open_segments_at` history ambiguous.
+    would make `open_segments_at` history ambiguous. The history is recomputed
+    from the recorded hops' segment effects (see entry 32), because
+    `open_segments_at` alone misses ids opened and closed within one hop.
 
 ## S6 — planner
 
@@ -111,23 +113,25 @@ chosen and why. Section numbers refer to the v10 plan.
     are enumerated per (minimal domain set, point pair). `JoinReport.joins`
     is a `Vec` so one report can carry multiple point pairs.
 
-19. **`detaches[i]` is hop `i`'s own in→out crossing**, computed as
-    `detach_level(m_i, m_i, continuing_segments)`. Internal composition
-    boundaries are checked for `SegmentViolation` only. A hop that continues
-    a segment must preserve its carries; a hop that merely opens+closes a
-    segment internally (LightningPath) has nothing checked against its
-    `preserves`, matching the spec's "the hash does not cross past the
-    close".
+19. **`detaches[i]` is hop `i`'s own in→out crossing**, computed with the
+    per-hop ACTIVE segment set (entry 31): segments open across the boundary
+    into hop `i` that hop `i` continues are structural-checked against its
+    `preserves`, while everything open across the input boundary plus hop
+    `i`'s own opens excludes its carried specs from the leak set. Internal
+    composition boundaries are checked for `SegmentViolation` only. A hop
+    that merely opens+closes a segment internally (LightningPath) has nothing
+    checked against its `preserves`, matching the spec's "the hash does not
+    cross past the close".
 
 20. **One join, one severity: the max over `via` kinds.** The spec's
     formula applies `severity(via.kind)` per join; summing per kind would
     double-count a single join. Confidence is likewise the max over the via
-    kinds. Confidence rule: value-continuous (preserved at every hop between
-    the points) identifier kinds ⇒ `Exact`; value-continuous AMOUNT/TIME/
-    DENOMINATION within the window ⇒ `High`; everything else ⇒
-    `Statistical`. TIME/AMOUNT joins outside the window are still reported at
-    `Statistical` rather than dropped (the scorer reports; `detach_level`
-    filters).
+    kinds. Confidence rule: value-continuous (preserved, same namespace, at
+    every hop between the points) identifier kinds ⇒ `Exact`;
+    value-continuous AMOUNT/TIME/DENOMINATION within the window ⇒ `High`;
+    everything else ⇒ `Statistical`. AMOUNT/TIME joins outside the window are
+    dropped entirely (entry 34); CONTENT_SIZE remains `Statistical`
+    regardless of the window.
 
 21. **Witnesses with no known domain contribute no scored joins** (their
     uncertainty is already reported as `DetachLevel::Unknown`, which earns a
@@ -183,3 +187,57 @@ chosen and why. Section numbers refer to the v10 plan.
 30. **`docs/COMPARISONS.md` is regenerated only under
     `MOLT_COMPARISONS_REGENERATE=1 cargo test --doc`**; the default doc-test
     path fails on any drift from the committed file.
+
+## Review fixes (v12)
+
+31. **Per-hop ACTIVE segment set in the scorer.** Hop `i`'s own in→out
+    crossing and hop-local join computation exclude the carried specs of:
+    every segment open across the boundary *into* hop `i`, plus hop `i`'s own
+    opens (opens apply before closes, entry 9). Rationale: an adapter that
+    opens and closes a segment in one hop (LightningPath's payment hash,
+    BoundedTransferStep's receipt) declares that continuity by opening the
+    segment; charging its carried correlators as leaks/joins contradicts
+    "inside a segment: checked as preserved, never scored" (S5). The hop's
+    own opens are *not* structural-checked against `preserves` — S6 declares
+    LightningPath's `preserves` as `[AMOUNT, TIME]` while the segment, not
+    `preserves`, is what carries the hash; requiring both would make every
+    S6 fixture a violation. `detach_level` keeps its single-set public form;
+    the split lives in crate-internal `detach_level_scoped`.
+
+32. **`DuplicateSegmentId` history is recomputed from hop effects.** A
+    segment opened and closed within a single earlier hop never appears in
+    `open_segments_at`, so deriving the used-id history from it let a later
+    hop silently reuse the id. The planner now unions the `opens` of every
+    recorded hop (adapters are in scope at extension time, so no `Route`
+    schema change was needed). Regression test covers both the same-hop
+    open+close reuse and the still-open reuse.
+
+33. **The scorer matches on `CorrelatorSpec`, not bare `Field`.** A domain
+    observing a kind for which an adjacent hop declares a matching
+    `preserves` entry observes that spec (kind + namespace); kinds with no
+    known spec fall back to field-only entries (empty namespace). Two known
+    specs of the same kind with different namespaces never join (the value is
+    transformed between the points); collapsing to `Field` conflated e.g.
+    `TRANSACTION_ID/lightning.payment_hash` with `TRANSACTION_ID/bitcoin.txid`
+    and fabricated an `Exact` join. Field-only observations still match by
+    kind alone (there is no spec to disprove the join) at `Statistical`.
+
+34. **AMOUNT/TIME joins are dropped outside `time_window_secs`.** S5 states
+    AMOUNT/TIME count as leaks/joins only within the window; reporting them
+    at `Statistical` anyway contradicted that. `CONTENT_SIZE` (a size/timing
+    pattern) is unaffected and remains `Statistical` at any distance. This
+    supersedes the last sentence of entry 20 as originally written.
+
+35. **`platform_market.not_better_when` states a baseline-favoring
+    condition.** The previous text restated Molt's residual limits. The
+    fixture now names what the platform's total witness buys (escrow custody
+    and dispute resolution between strangers, marketplace liquidity and
+    discovery, custodial reputation aggregation), per S11's "where Molt is
+    not better, the vector says so". `docs/COMPARISONS.md` was regenerated
+    via the pinned doc test.
+
+36. **Housekeeping.** Stale `v10` references updated to `v12`
+    (`tests/vectors.rs`, `tests/vectors/molt_route_v1.json`, this file).
+    `attempted_stub` renamed to `attempted_partial_route` in
+    `src/planner.rs`: it builds a partial route for rejection reporting, not
+    a stub, and the old name trips stub-hygiene greps.

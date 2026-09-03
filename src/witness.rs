@@ -735,8 +735,28 @@ pub fn detach_level(
     reg: &DomainRegistry,
     asm: &Assumptions,
 ) -> Result<DetachLevel, SegmentViolation> {
-    // 1. Structural check: open segments must have their carries preserved.
-    for seg in open {
+    detach_level_scoped(a, b, open, open, reg, asm)
+}
+
+/// [`detach_level`] with separate segment sets: the carries of every
+/// `checked` segment MUST be in `a.preserves` (else [`SegmentViolation`]),
+/// while the carries of every `excluded` segment are removed from the leak
+/// set. The public entry point uses one set for both (a segment open across
+/// a boundary is both checked and excluded). The scorer uses the split form
+/// for a hop's own in→out crossing: the hop's *own opens* exclude their
+/// carried specs (the adapter declares that continuity by opening the
+/// segment; it is not required to repeat it in `preserves`) but are not
+/// structural-checked, while segments passing through the hop are both.
+pub(crate) fn detach_level_scoped(
+    a: &Manifest,
+    b: &Manifest,
+    checked: &[Segment],
+    excluded: &[Segment],
+    reg: &DomainRegistry,
+    asm: &Assumptions,
+) -> Result<DetachLevel, SegmentViolation> {
+    // 1. Structural check: checked segments must have their carries preserved.
+    for seg in checked {
         let missing: Vec<CorrelatorSpec> = seg
             .carries
             .iter()
@@ -752,11 +772,11 @@ pub fn detach_level(
     }
 
     // 2. Leaks: a.preserves, plus kinds some domain sees on both sides,
-    //    minus everything inside open segments.
+    //    minus everything inside excluded segments.
     let mut leaks: Vec<CorrelatorSpec> = a
         .preserves
         .iter()
-        .filter(|p| !excluded_by_open(p, open))
+        .filter(|p| !excluded_by_open(p, excluded))
         .cloned()
         .collect();
 
@@ -770,7 +790,7 @@ pub fn detach_level(
                     kind: f,
                     namespace: String::new(),
                 };
-                if !excluded_by_open(&spec, open)
+                if !excluded_by_open(&spec, excluded)
                     && counts_as_leak(&spec, a.latency_bound_secs, asm)
                 {
                     leaks.push(spec);
@@ -824,7 +844,7 @@ pub fn detach_level(
                     kind: f,
                     namespace: String::new(),
                 };
-                if !excluded_by_open(&spec, open)
+                if !excluded_by_open(&spec, excluded)
                     && counts_as_leak(&spec, a.latency_bound_secs, asm)
                 {
                     holds = false;

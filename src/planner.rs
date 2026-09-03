@@ -13,7 +13,7 @@ use crate::witness::{
 };
 use crate::PurposeId;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 /// Hard bounds on the search. v1 defaults: depth 4, at most 8 routes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,11 +154,20 @@ fn try_extend(
     // Effects apply opens → continues → closes within the hop, so an adapter
     // may open and close the same segment in one hop (a Lightning path opens
     // and closes its payment-hash segment in a single adapter).
-    let before = open.clone();
+    //
+    // Duplicate detection tracks every id opened anywhere earlier on this
+    // route. `open_segments_at` alone misses ids that were opened and closed
+    // within a single earlier hop (they never appear in the post-hop open
+    // set), so the history is recomputed from the recorded hops' effects.
+    let mut used_ids: BTreeSet<SegmentId> = BTreeSet::new();
+    for h in &r.hops {
+        if let Some(prev) = by_id(adapters, h) {
+            used_ids.extend(prev.segments().opens.iter().map(|s| s.id.clone()));
+        }
+    }
     for seg in &effects.opens {
-        let already_open = before.iter().any(|s| s.id == seg.id);
-        let used_before = r.open_segments_at.iter().flatten().any(|s| s.id == seg.id);
-        if already_open || used_before {
+        let already_open = open.iter().any(|s| s.id == seg.id);
+        if already_open || used_ids.contains(&seg.id) {
             return Err(RejectReason::DuplicateSegmentId(seg.id.clone()));
         }
         open.push(seg.clone());
@@ -305,7 +314,7 @@ pub fn plan(
             match try_extend(&r, ad, &next, adapters, evals) {
                 Ok(candidate) => queue.push_back(candidate),
                 Err(reason) => {
-                    let partial = attempted_stub(&r, ad, &next);
+                    let partial = attempted_partial_route(&r, ad, &next);
                     result.rejected.push((partial, reason));
                 }
             }
@@ -316,7 +325,7 @@ pub fn plan(
 
 /// The partial route recording a failed extension attempt (includes the
 /// attempted hop and produced state for diagnosability).
-fn attempted_stub(r: &Route, ad: &dyn Adapter, next: &RouteState) -> Route {
+fn attempted_partial_route(r: &Route, ad: &dyn Adapter, next: &RouteState) -> Route {
     Route {
         hops: r
             .hops
@@ -537,6 +546,65 @@ mod tests {
             .rejected
             .iter()
             .any(|(_, r)| matches!(r, RejectReason::DuplicateSegmentId(id) if id.0 == "s1")));
+    }
+
+    #[test]
+    fn rejects_duplicate_segment_id_from_same_hop_open_close() {
+        // a1 opens AND closes "x" within a single hop, so "x" never appears in
+        // any open_segments_at entry; a2 re-opening "x" must still be a
+        // DuplicateSegmentId. (The reuse-while-still-open case is covered by
+        // rejects_unclosed_segment_and_close_without_open_and_duplicate_id.)
+        let seg = Segment {
+            id: SegmentId("x".into()),
+            carries: vec![CorrelatorSpec::new(Field::TRANSACTION_ID, "bitcoin.txid").expect("spec")],
+        };
+        let mut a1 = TestAdapter::new(
+            "a1",
+            vec![value("s0", Holder::Self_)],
+            value("s1", Holder::Self_),
+        );
+        a1.effects.opens = vec![seg.clone()];
+        a1.effects.closes = vec![seg.id.clone()];
+        let mut a2 = TestAdapter::new(
+            "a2",
+            vec![value("s1", Holder::Self_)],
+            value("s2", Holder::Self_),
+        );
+        a2.effects.opens = vec![seg];
+        let adapters: Vec<&dyn Adapter> = vec![&a1, &a2];
+        let res = plan(
+            &value("s0", Holder::Self_),
+            &value("s2", Holder::Self_),
+            &adapters,
+            &no_evals(),
+            &v1(),
+        );
+        assert!(res.routes.is_empty());
+        assert!(res
+            .rejected
+            .iter()
+            .any(|(_, r)| matches!(r, RejectReason::DuplicateSegmentId(id) if id.0 == "x")));
+
+        // Control: a2 opening a fresh id plans fine.
+        let mut a3 = TestAdapter::new(
+            "a3",
+            vec![value("s1", Holder::Self_)],
+            value("s2", Holder::Self_),
+        );
+        a3.effects.opens = vec![Segment {
+            id: SegmentId("y".into()),
+            carries: vec![CorrelatorSpec::new(Field::TRANSACTION_ID, "swap.hash").expect("spec")],
+        }];
+        a3.effects.closes = vec![SegmentId("y".into())];
+        let adapters2: Vec<&dyn Adapter> = vec![&a1, &a3];
+        let res2 = plan(
+            &value("s0", Holder::Self_),
+            &value("s2", Holder::Self_),
+            &adapters2,
+            &no_evals(),
+            &v1(),
+        );
+        assert_eq!(res2.routes.len(), 1, "rejected: {:?}", res2.rejected);
     }
 
     #[test]

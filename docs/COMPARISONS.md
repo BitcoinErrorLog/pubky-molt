@@ -42,7 +42,7 @@ Molt route ranks lower in continuity cost under these assumptions: **yes** (`5.5
 ### Joins remaining (Molt route)
 
 - `relay-co-1` joins observation points 1↔2 via RELATIONSHIP_LINK, TIME, CONTENT_SIZE (`wire.bytes`), NETWORK_LOCATION (confidence: Statistical)
-- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, OBLIGATION_ID, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
+- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
 - The intermediary learns both relationship identities; reducing this belongs to whichever credit protocol implements the step.
 - Counterparties know each other by construction (bounded trust, not a leak).
 - Settlement later via PaymentPluginBridge(onchain) is a netted aggregate: no per-payment amount or time fingerprint.
@@ -76,7 +76,7 @@ Molt route ranks lower in continuity cost under these assumptions: **yes** (`5.5
 ### Joins remaining (Molt route)
 
 - `relay-co-1` joins observation points 1↔2 via RELATIONSHIP_LINK, TIME, CONTENT_SIZE (`wire.bytes`), NETWORK_LOCATION (confidence: Statistical)
-- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, OBLIGATION_ID, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
+- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
 - This vector uses the credit path; with the on-chain path everything the chain would have seen remains.
 - The intermediary learns both relationship identities; reducing this belongs to whichever credit protocol implements the step.
 - Counterparties know each other by construction (bounded trust, not a leak).
@@ -176,11 +176,11 @@ Molt route ranks lower in continuity cost under these assumptions: **yes** (`5.5
 ### Joins remaining (Molt route)
 
 - `relay-co-1` joins observation points 1↔2 via RELATIONSHIP_LINK, TIME, CONTENT_SIZE (`wire.bytes`), NETWORK_LOCATION (confidence: Statistical)
-- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, OBLIGATION_ID, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
+- `clearing-house-a` joins observation points 3↔4 via RELATIONSHIP_IDENTITY, DENOMINATION, AMOUNT, TIME (confidence: Statistical)
 - Counterparties know whom they trust (bounded trust, not a leak).
 - Intermediaries learn adjacent endpoints.
 - Reputation is promoted evidence chosen by the holder; discovery depends on the indexers people choose to read.
 
 ### Not better when
 
-Counterparties know whom they trust (bounded trust, not a leak); intermediaries learn adjacent endpoints; discovery of promoted claims depends on the indexers people choose to read.
+You need what the platform's total witness buys: escrow custody and dispute resolution between strangers with no prior relationship, marketplace liquidity and discovery (a counterparty must be found before any bilateral channel can exist), or custodial aggregation of reputation across many counterparties. Molt's bilateral evidence does not replace those functions; it removes the platform's witness only where counterparties already have a way to find and vet each other.

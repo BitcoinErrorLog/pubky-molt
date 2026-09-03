@@ -8,19 +8,28 @@
 //! construction, so a join over it is [`Confidence::Exact`] for identifier
 //! kinds and [`Confidence::High`]/[`Confidence::Statistical`] for
 //! `AMOUNT`/`TIME`/`CONTENT_SIZE` within the assumptions' time window. Specs
-//! inside an open [`crate::witness::Segment`] at an observation point are
-//! excluded from cost; everywhere else they count.
+//! carried by a [`crate::witness::Segment`] that is active at an observation
+//! point are excluded from cost; everywhere else they count. A segment is
+//! active across hop `i` if it is open across the boundary *into* hop `i`
+//! or hop `i` opens it itself (opens apply before closes), so an adapter
+//! that opens and closes a segment in a single hop (a Lightning path, a
+//! bounded transfer step) is never charged for its own carried correlators.
 //!
 //! Observation points: point `0` is the input of hop `0`, point `p`
 //! (`1..n`) is the boundary between hop `p-1` and hop `p`, and point `n` is
 //! the output of the last hop. A domain observes the union of the relevant
-//! witnesses' `learns_in`/`learns_out` at each point.
+//! witnesses' `learns_in`/`learns_out` at each point. Where a spec is known
+//! for an observed kind (an adjacent hop preserves it), the scorer matches
+//! on the full [`CorrelatorSpec`] — kind *and* namespace — so
+//! `{TRANSACTION_ID, "lightning.payment_hash"}` and
+//! `{TRANSACTION_ID, "bitcoin.txid"}` are never conflated; only observed
+//! kinds with no known spec fall back to field-only matching.
 
 use crate::planner::RejectReason;
 use crate::route::{Adapter, Amount, Route};
 use crate::witness::{
-    detach_level, Assumptions, CorrelatorSpec, DetachLevel, DomainRegistry, Field, Manifest,
-    ObservationDomain, Segment, SegmentViolation,
+    detach_level, detach_level_scoped, Assumptions, CorrelatorSpec, DetachLevel, DomainRegistry,
+    Field, Manifest, ObservationDomain, Segment, SegmentViolation,
 };
 use crate::{MoltError, PurposeId};
 use serde::{Deserialize, Serialize};
@@ -283,37 +292,91 @@ fn add_learns(
     }
 }
 
-/// Kinds carried by segments open across observation point `p` (`1..n`).
-fn excluded_kinds(open_at: &[Vec<Segment>], point: usize) -> Field {
+/// Domain → observed correlator specs at one observation point.
+///
+/// A domain observing a kind for which an adjacent hop declares a matching
+/// `preserves` entry observes that *spec* (kind + namespace); a kind with no
+/// known spec yields a field-only entry (empty namespace). This keeps
+/// namespaces in the scoring wherever they are known, so the same kind in
+/// two different namespaces is never conflated.
+fn point_specs(
+    manifests: &[&Manifest],
+    point: usize,
+    reg: &DomainRegistry,
+) -> BTreeMap<ObservationDomain, BTreeSet<CorrelatorSpec>> {
+    let kinds = point_kinds(manifests, point, reg);
+    let n = manifests.len();
+    let adjacent: [&Manifest; 2] = if point == 0 {
+        [manifests[0], manifests[0]]
+    } else if point == n {
+        [manifests[n - 1], manifests[n - 1]]
+    } else {
+        [manifests[point - 1], manifests[point]]
+    };
+    let mut out: BTreeMap<ObservationDomain, BTreeSet<CorrelatorSpec>> = BTreeMap::new();
+    for (dom, ks) in kinds {
+        let mut set = BTreeSet::new();
+        for f in ks.iter() {
+            let mut known = false;
+            for m in adjacent {
+                for p in &m.preserves {
+                    if p.kind.contains(f) {
+                        set.insert(CorrelatorSpec {
+                            kind: f,
+                            namespace: p.namespace.clone(),
+                        });
+                        known = true;
+                    }
+                }
+            }
+            if !known {
+                set.insert(CorrelatorSpec {
+                    kind: f,
+                    namespace: String::new(),
+                });
+            }
+        }
+        out.insert(dom, set);
+    }
+    out
+}
+
+/// Specs carried by segments open across observation point `p` (`1..=n`).
+fn carried_specs_at(open_at: &[Vec<Segment>], point: usize) -> Vec<CorrelatorSpec> {
     if point == 0 || point > open_at.len() {
-        return Field::empty();
+        return Vec::new();
     }
     open_at[point - 1]
         .iter()
-        .flat_map(|s| s.carries.iter())
-        .fold(Field::empty(), |acc, c| acc | c.kind)
+        .flat_map(|s| s.carries.iter().cloned())
+        .collect()
 }
 
-/// Is `kind` preserved (value-continuous) across every hop in `from..to`?
-fn continuous_across(manifests: &[&Manifest], from: usize, to: usize, kind: Field) -> bool {
+/// Is `spec` excluded from a hop-local join or leak because an active
+/// segment carries it? Mirrors [`crate::witness`]'s leak-exclusion rule: a
+/// known spec is excluded only by a carried spec of the same kind *and*
+/// namespace; a field-only observation (empty namespace) is excluded by any
+/// carried spec of the same kind.
+fn excluded_by_active(spec: &CorrelatorSpec, active_carries: &[CorrelatorSpec]) -> bool {
+    active_carries.iter().any(|c| {
+        c.kind.contains(spec.kind) && (spec.namespace.is_empty() || c.namespace == spec.namespace)
+    })
+}
+
+/// Is `spec` preserved (value-continuous, same kind *and* namespace) across
+/// every hop in `from..to`?
+fn spec_continuous_across(
+    manifests: &[&Manifest],
+    from: usize,
+    to: usize,
+    spec: &CorrelatorSpec,
+) -> bool {
     (from..to).all(|h| {
         manifests[h]
             .preserves
             .iter()
-            .any(|p| p.kind.intersects(kind))
+            .any(|p| p.kind.contains(spec.kind) && p.namespace == spec.namespace)
     })
-}
-
-/// Namespace for `kind` seen in preserves of hops `from..to`, if any.
-fn namespace_for(manifests: &[&Manifest], from: usize, to: usize, kind: Field) -> String {
-    for m in manifests.iter().take(to).skip(from) {
-        for p in &m.preserves {
-            if p.kind.intersects(kind) {
-                return p.namespace.clone();
-            }
-        }
-    }
-    String::new()
 }
 
 /// Are observations at points `i` and `j` within the assumptions' window?
@@ -326,15 +389,21 @@ fn within_window(manifests: &[&Manifest], i: usize, j: usize, asm: &Assumptions)
     latency <= asm.time_window_secs as u64
 }
 
-/// Confidence of a join through `kind` between points `i` and `j`.
+/// Confidence of a join through `spec` between points `i` and `j`.
+///
+/// A value-continuous known spec (preserved, same namespace, at every hop in
+/// `i..j`) joins at `Exact` for identifier kinds and at `High` for
+/// `AMOUNT`/`TIME`/`DENOMINATION` within the window. Everything else —
+/// including `CONTENT_SIZE` and every field-only observation — is
+/// `Statistical`.
 fn join_confidence(
     manifests: &[&Manifest],
     i: usize,
     j: usize,
-    kind: Field,
+    spec: &CorrelatorSpec,
     asm: &Assumptions,
 ) -> Confidence {
-    let continuous = continuous_across(manifests, i, j, kind);
+    let continuous = !spec.namespace.is_empty() && spec_continuous_across(manifests, i, j, spec);
     let identifiers = Field::ROOT_IDENTITY
         | Field::RELATIONSHIP_IDENTITY
         | Field::PAIRWISE_KEY
@@ -346,9 +415,9 @@ fn join_confidence(
         | Field::DEST_ENDPOINT
         | Field::CONTEXT_ID;
     let windowed = Field::AMOUNT | Field::TIME | Field::DENOMINATION;
-    if continuous && kind.intersects(identifiers) {
+    if continuous && spec.kind.intersects(identifiers) {
         Confidence::Exact
-    } else if continuous && kind.intersects(windowed) && within_window(manifests, i, j, asm) {
+    } else if continuous && spec.kind.intersects(windowed) && within_window(manifests, i, j, asm) {
         Confidence::High
     } else {
         Confidence::Statistical
@@ -412,18 +481,31 @@ pub fn score(
 
     // Detach levels: detaches[i] is hop i's own in→out crossing. Segments
     // that continue through hop i must have their carries preserved by it.
+    // The exclusion set is the per-hop ACTIVE set: every segment open across
+    // the boundary into hop i, plus hop i's own opens (opens apply before
+    // closes). A hop that opens and closes a segment in one hop is therefore
+    // not charged a leak for the correlators it carries inside that segment.
     let mut detaches = Vec::with_capacity(route.hops.len());
     for (i, m) in manifests.iter().enumerate() {
-        let continuing: Vec<Segment> = if i == 0 {
-            Vec::new()
+        let inbound: &[Segment] = if i == 0 {
+            &[]
         } else {
-            route.open_segments_at[i - 1]
-                .iter()
-                .filter(|s| effects[i].continues.contains(&s.id))
-                .cloned()
-                .collect()
+            &route.open_segments_at[i - 1]
         };
-        detaches.push(detach_level(m, m, &continuing, reg, asm).map_err(ScoreError::Violation)?);
+        let continuing: Vec<Segment> = inbound
+            .iter()
+            .filter(|s| effects[i].continues.contains(&s.id))
+            .cloned()
+            .collect();
+        let active: Vec<Segment> = inbound
+            .iter()
+            .cloned()
+            .chain(effects[i].opens.iter().cloned())
+            .collect();
+        detaches.push(
+            detach_level_scoped(m, m, &continuing, &active, reg, asm)
+                .map_err(ScoreError::Violation)?,
+        );
     }
     // Internal composition boundaries: structural violation check.
     for i in 1..manifests.len() {
@@ -439,8 +521,8 @@ pub fn score(
 
     // Observation points 0..=n.
     let n = route.hops.len();
-    let points: Vec<BTreeMap<ObservationDomain, Field>> =
-        (0..=n).map(|p| point_kinds(&manifests, p, reg)).collect();
+    let points: Vec<BTreeMap<ObservationDomain, BTreeSet<CorrelatorSpec>>> =
+        (0..=n).map(|p| point_specs(&manifests, p, reg)).collect();
 
     // Join enumeration over minimal domain sets of size <= colluding_set_size.
     let mut joins: Vec<JoinReport> = Vec::new();
@@ -452,8 +534,19 @@ pub fn score(
     let max_k = (asm.colluding_set_size as usize).min(domains.len()).max(1);
     for i in 0..=n {
         for j in (i + 1)..=n {
-            let excluded = excluded_kinds(&route.open_segments_at, i)
-                | excluded_kinds(&route.open_segments_at, j);
+            // Exclusion set: specs carried by segments open across either
+            // boundary point, plus — for the hop-local pair (i, i+1) — the
+            // specs hop i opens and closes itself (the ACTIVE set of hop i).
+            let mut excluded = carried_specs_at(&route.open_segments_at, i);
+            excluded.extend(carried_specs_at(&route.open_segments_at, j));
+            if j == i + 1 {
+                excluded.extend(
+                    effects[i]
+                        .opens
+                        .iter()
+                        .flat_map(|s| s.carries.iter().cloned()),
+                );
+            }
             for k in 1..=max_k {
                 for subset_idx in combinations(domains.len(), k) {
                     let subset: BTreeSet<ObservationDomain> =
@@ -470,30 +563,58 @@ pub fn score(
                     if dominated {
                         continue;
                     }
-                    let ki: Field = subset_idx.iter().fold(Field::empty(), |acc, &x| {
-                        acc | points[i]
-                            .get(&domains[x])
-                            .copied()
-                            .unwrap_or_else(Field::empty)
-                    });
-                    let kj: Field = subset_idx.iter().fold(Field::empty(), |acc, &x| {
-                        acc | points[j]
-                            .get(&domains[x])
-                            .copied()
-                            .unwrap_or_else(Field::empty)
-                    });
-                    let common = (ki & kj) & asm.join_kinds & !excluded;
-                    if common.is_empty() {
-                        continue;
-                    }
-                    let mut via: Vec<CorrelatorSpec> = Vec::new();
+                    let empty: BTreeSet<CorrelatorSpec> = BTreeSet::new();
+                    let si: BTreeSet<&CorrelatorSpec> = subset_idx
+                        .iter()
+                        .flat_map(|&x| points[i].get(&domains[x]).unwrap_or(&empty).iter())
+                        .collect();
+                    let sj: BTreeSet<&CorrelatorSpec> = subset_idx
+                        .iter()
+                        .flat_map(|&x| points[j].get(&domains[x]).unwrap_or(&empty).iter())
+                        .collect();
+                    let mut via: BTreeSet<CorrelatorSpec> = BTreeSet::new();
                     let mut conf = Confidence::Statistical;
-                    for f in common.iter() {
-                        via.push(CorrelatorSpec {
-                            kind: f,
-                            namespace: namespace_for(&manifests, i, j, f),
-                        });
-                        conf = conf.max(join_confidence(&manifests, i, j, f, asm));
+                    for a in &si {
+                        for b in &sj {
+                            if !a.kind.intersects(b.kind) {
+                                continue;
+                            }
+                            let kind = a.kind & b.kind;
+                            if !kind.intersects(asm.join_kinds) {
+                                continue;
+                            }
+                            // AMOUNT/TIME joins exist only within the time
+                            // window; CONTENT_SIZE (and everything else) is
+                            // matched regardless of the window.
+                            if kind.intersects(Field::AMOUNT | Field::TIME)
+                                && !within_window(&manifests, i, j, asm)
+                            {
+                                continue;
+                            }
+                            let a_known = !a.namespace.is_empty();
+                            let b_known = !b.namespace.is_empty();
+                            if a_known && b_known && a.namespace != b.namespace {
+                                // Same kind, different namespaces: the value
+                                // is transformed between the points; no join.
+                                continue;
+                            }
+                            let spec = CorrelatorSpec {
+                                kind,
+                                namespace: if a_known && b_known {
+                                    a.namespace.clone()
+                                } else {
+                                    String::new()
+                                },
+                            };
+                            if excluded_by_active(&spec, &excluded) {
+                                continue;
+                            }
+                            conf = conf.max(join_confidence(&manifests, i, j, &spec, asm));
+                            via.insert(spec);
+                        }
+                    }
+                    if via.is_empty() {
+                        continue;
                     }
                     reported_sets
                         .entry((i, j))
@@ -502,7 +623,7 @@ pub fn score(
                     joins.push(JoinReport {
                         domain_set: subset.into_iter().collect(),
                         joins: vec![(i, j)],
-                        via,
+                        via: via.into_iter().collect(),
                         confidence: conf,
                     });
                 }
@@ -1011,6 +1132,314 @@ mod tests {
             "join spanning a closed segment is the scored leak: {:?}",
             without.joins
         );
+    }
+
+    #[test]
+    fn same_hop_open_close_segment_excludes_carried_correlators() {
+        // An adapter that opens AND closes a segment in one hop (LightningPath,
+        // BoundedTransferStep) must not have its own carried correlators
+        // charged as leaks or joins.
+        let ph =
+            CorrelatorSpec::new(Field::TRANSACTION_ID, "lightning.payment_hash").expect("spec");
+        let receipt = CorrelatorSpec::new(Field::OBLIGATION_ID, "credit.receipt_id").expect("spec");
+        let ln = HopAdapter {
+            id: "ln".into(),
+            manifest: Manifest {
+                adapter_id: "ln".into(),
+                witnesses: vec![witness(
+                    WitnessRole::LnPeer,
+                    "ln",
+                    &["ln-net"],
+                    Field::TRANSACTION_ID,
+                    Field::TRANSACTION_ID,
+                )],
+                preserves: vec![],
+                latency_bound_secs: Some(30),
+            },
+            effects: SegmentEffects {
+                opens: vec![Segment {
+                    id: SegmentId("ln".into()),
+                    carries: vec![ph.clone()],
+                }],
+                continues: vec![],
+                closes: vec![SegmentId("ln".into())],
+            },
+            costs: vec![],
+        };
+        let bts = HopAdapter {
+            id: "bts".into(),
+            manifest: Manifest {
+                adapter_id: "bts".into(),
+                witnesses: vec![witness(
+                    WitnessRole::Intermediary,
+                    "ch",
+                    &["clearing-house"],
+                    Field::OBLIGATION_ID,
+                    Field::OBLIGATION_ID,
+                )],
+                preserves: vec![],
+                latency_bound_secs: Some(5),
+            },
+            effects: SegmentEffects {
+                opens: vec![Segment {
+                    id: SegmentId("step".into()),
+                    carries: vec![receipt.clone()],
+                }],
+                continues: vec![],
+                closes: vec![SegmentId("step".into())],
+            },
+            costs: vec![],
+        };
+        for ad in [&ln, &bts] {
+            let route = Route {
+                hops: vec![ad.id().to_string()],
+                states: vec![s(), s()],
+                open_segments_at: vec![vec![]],
+            };
+            let adapters: Vec<&dyn Adapter> = vec![ad];
+            let sc = score(
+                &route,
+                &adapters,
+                &DomainRegistry::new(),
+                &Assumptions::default(),
+                &MAX_DETACH,
+                &SingleAsset::new("BTC", "sat"),
+            )
+            .expect("score");
+            assert!(
+                sc.joins.is_empty(),
+                "{}: same-hop carried correlator must produce zero joins: {:?}",
+                ad.id(),
+                sc.joins
+            );
+            assert_eq!(
+                sc.detaches,
+                vec![DetachLevel::Independent],
+                "{}: same-hop carried correlator is no leak",
+                ad.id()
+            );
+        }
+
+        // Control: a spec the adapter preserves but does NOT carry in any
+        // segment is still charged.
+        let plain = HopAdapter {
+            id: "plain".into(),
+            manifest: Manifest {
+                adapter_id: "plain".into(),
+                witnesses: vec![witness(
+                    WitnessRole::LnPeer,
+                    "ln",
+                    &["ln-net"],
+                    Field::TRANSACTION_ID,
+                    Field::TRANSACTION_ID,
+                )],
+                preserves: vec![ph],
+                latency_bound_secs: Some(30),
+            },
+            effects: SegmentEffects::default(),
+            costs: vec![],
+        };
+        let route = Route {
+            hops: vec!["plain".into()],
+            states: vec![s(), s()],
+            open_segments_at: vec![vec![]],
+        };
+        let adapters: Vec<&dyn Adapter> = vec![&plain];
+        let sc = score(
+            &route,
+            &adapters,
+            &DomainRegistry::new(),
+            &Assumptions::default(),
+            &MAX_DETACH,
+            &SingleAsset::new("BTC", "sat"),
+        )
+        .expect("score");
+        assert_eq!(sc.joins.len(), 1, "preserved-not-carried spec is charged");
+        assert_eq!(sc.joins[0].confidence, Confidence::Exact);
+        assert_eq!(sc.detaches, vec![DetachLevel::None]);
+    }
+
+    #[test]
+    fn declared_same_hop_segments_produce_no_carried_joins_or_leaks() {
+        // The declared LightningPath and BoundedTransferStep fixtures open and
+        // close their segments inside a single hop; their carried correlators
+        // (lightning.payment_hash, credit.receipt_id) must produce zero
+        // JoinReports and no leak.
+        struct SumAll;
+        impl CostPolicy for SumAll {
+            fn reduce(&self, costs: &[Amount]) -> Result<f32, MoltError> {
+                Ok(costs.iter().map(|c| c.value as f32).sum())
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/declared");
+        let ln = crate::route::DeclaredAdapter::from_file(&dir.join("lightning_path.json"))
+            .expect("ln fixture");
+        let bts = crate::route::DeclaredAdapter::from_file(&dir.join("bounded_transfer_step.json"))
+            .expect("bts fixture");
+        for (ad, kind, ns) in [
+            (&ln, Field::TRANSACTION_ID, "lightning.payment_hash"),
+            (&bts, Field::OBLIGATION_ID, "credit.receipt_id"),
+        ] {
+            let route = Route {
+                hops: vec![ad.id().to_string()],
+                states: vec![ad.fixture().accepts.clone(), ad.fixture().produces.clone()],
+                open_segments_at: vec![vec![]],
+            };
+            let adapters: Vec<&dyn Adapter> = vec![ad];
+            let sc = score(
+                &route,
+                &adapters,
+                &DomainRegistry::new(),
+                &Assumptions::default(),
+                &MAX_DETACH,
+                &SumAll,
+            )
+            .expect("score");
+            assert!(
+                sc.joins
+                    .iter()
+                    .all(|j| j.via.iter().all(|v| !v.kind.intersects(kind))),
+                "{}: no join via the carried kind {kind:?}: {:?}",
+                ad.id(),
+                sc.joins
+            );
+            assert!(
+                sc.joins
+                    .iter()
+                    .all(|j| j.via.iter().all(|v| v.namespace != ns)),
+                "{}: no join via {ns}: {:?}",
+                ad.id(),
+                sc.joins
+            );
+        }
+    }
+
+    #[test]
+    fn namespaces_distinguish_transaction_id_joins() {
+        // Two hops preserving the same KIND in DIFFERENT namespaces transform
+        // the value: no join spans both. Same namespace: Exact join.
+        let mk = |id: &str, ns: &str| HopAdapter {
+            id: id.into(),
+            manifest: Manifest {
+                adapter_id: id.into(),
+                witnesses: vec![witness(
+                    WitnessRole::Chain,
+                    "c",
+                    &["chain"],
+                    Field::TRANSACTION_ID,
+                    Field::TRANSACTION_ID,
+                )],
+                preserves: vec![CorrelatorSpec::new(Field::TRANSACTION_ID, ns).expect("spec")],
+                latency_bound_secs: Some(1),
+            },
+            effects: SegmentEffects::default(),
+            costs: vec![],
+        };
+        let run = |a1: &HopAdapter, a2: &HopAdapter| {
+            let route = Route {
+                hops: vec!["h1".into(), "h2".into()],
+                states: vec![s(), s(), s()],
+                open_segments_at: vec![vec![], vec![]],
+            };
+            let adapters: Vec<&dyn Adapter> = vec![a1, a2];
+            score(
+                &route,
+                &adapters,
+                &DomainRegistry::new(),
+                &Assumptions::default(),
+                &MAX_DETACH,
+                &SingleAsset::new("BTC", "sat"),
+            )
+            .expect("score")
+        };
+        let diff = run(
+            &mk("h1", "lightning.payment_hash"),
+            &mk("h2", "bitcoin.txid"),
+        );
+        assert!(
+            !diff.joins.iter().any(|j| j.joins.contains(&(0, 2))),
+            "namespace change must break the cross-route join: {:?}",
+            diff.joins
+        );
+        let same = run(
+            &mk("h1", "lightning.payment_hash"),
+            &mk("h2", "lightning.payment_hash"),
+        );
+        let full: Vec<&JoinReport> = same
+            .joins
+            .iter()
+            .filter(|j| j.joins.contains(&(0, 2)))
+            .collect();
+        assert_eq!(full.len(), 1, "same namespace joins end to end");
+        assert_eq!(full[0].confidence, Confidence::Exact);
+        assert_eq!(full[0].via[0].namespace, "lightning.payment_hash");
+    }
+
+    #[test]
+    fn amount_time_joins_only_within_window() {
+        // AMOUNT/TIME joins exist only within asm.time_window_secs;
+        // CONTENT_SIZE remains Statistical regardless of the window.
+        let mk = |latency: u32| HopAdapter {
+            id: "h".into(),
+            manifest: Manifest {
+                adapter_id: "h".into(),
+                witnesses: vec![witness(
+                    WitnessRole::Chain,
+                    "c",
+                    &["chain"],
+                    Field::AMOUNT | Field::TIME | Field::CONTENT_SIZE,
+                    Field::AMOUNT | Field::TIME | Field::CONTENT_SIZE,
+                )],
+                preserves: vec![
+                    CorrelatorSpec::new(Field::AMOUNT, "btc.sats").expect("spec"),
+                    CorrelatorSpec::new(Field::TIME, "time.unix").expect("spec"),
+                    CorrelatorSpec::new(Field::CONTENT_SIZE, "wire.bytes").expect("spec"),
+                ],
+                latency_bound_secs: Some(latency),
+            },
+            effects: SegmentEffects::default(),
+            costs: vec![],
+        };
+        let run = |ad: &HopAdapter| {
+            let route = Route {
+                hops: vec!["h".into()],
+                states: vec![s(), s()],
+                open_segments_at: vec![vec![]],
+            };
+            let adapters: Vec<&dyn Adapter> = vec![ad];
+            score(
+                &route,
+                &adapters,
+                &DomainRegistry::new(),
+                &Assumptions::default(), // window 3600
+                &MAX_DETACH,
+                &SingleAsset::new("BTC", "sat"),
+            )
+            .expect("score")
+        };
+        let far = run(&mk(7200));
+        assert!(
+            !far.joins.iter().any(|j| j
+                .via
+                .iter()
+                .any(|v| v.kind.intersects(Field::AMOUNT | Field::TIME))),
+            "outside the window AMOUNT/TIME produce no join: {:?}",
+            far.joins
+        );
+        let cs = far
+            .joins
+            .iter()
+            .find(|j| j.via.iter().any(|v| v.kind.contains(Field::CONTENT_SIZE)))
+            .expect("CONTENT_SIZE join remains regardless of window");
+        assert_eq!(cs.confidence, Confidence::Statistical);
+
+        let near = run(&mk(60));
+        let amt = near
+            .joins
+            .iter()
+            .find(|j| j.via.iter().any(|v| v.kind.contains(Field::AMOUNT)))
+            .expect("AMOUNT join within the window");
+        assert_eq!(amt.confidence, Confidence::High);
     }
 
     #[test]
