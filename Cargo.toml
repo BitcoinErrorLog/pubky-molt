@@ -1,0 +1,17 @@
+[package]
+name = "pubky-molt"
+version = "0.1.0"
+edition = "2021"
+description = "Molt: privacy routing layer that carries intent across identity, transport, and payment networks while shedding unnecessary correlation. Routing core (witnesses, manifests, segments, detach levels, bounded planner, continuity-cost scorer)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BitcoinErrorLog/pubky-molt"
+
+[dependencies]
+bitflags = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+blake3 = "1"
+thiserror = "2"
+ciborium = "0.2"
+
+[dev-dependencies]

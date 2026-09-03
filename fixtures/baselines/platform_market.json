@@ -1,0 +1,47 @@
+{
+  "name": "platform_market",
+  "title": "E. Pseudonymous commerce vs platform-mediated markets",
+  "summary": "A platform-mediated market (onion or clearnet). The platform domain learns the pseudonymous account identity, every counterparty, every amount, denomination, time, and content; it holds escrow. Total witness and single point of seizure/exit-scam.",
+  "assumptions": {
+    "colluding_set_size": 1,
+    "join_kinds": "ROOT_IDENTITY | RELATIONSHIP_IDENTITY | PAIRWISE_KEY | NETWORK_IDENTIFIER | SOURCE_ENDPOINT | DEST_ENDPOINT | TRANSACTION_ID | OBLIGATION_ID | CONTEXT_ID | RELATIONSHIP_LINK | ASSET | DENOMINATION | AMOUNT | TIME | CONTENT | CONTENT_SIZE | NETWORK_LOCATION | SESSION_IDENTIFIER",
+    "time_window_secs": 3600,
+    "treat_unknown_as_independent": false
+  },
+  "provenance": "Authors' model of escrow-platform market disclosure (S11.E), 2026-09-03.",
+  "omitted": [
+    "Reputation mechanisms and their export.",
+    "Multisig escrow variants (which reduce, not remove, the platform's view).",
+    "Global passive observers (out of threat model, S0)."
+  ],
+  "not_better_when": "Counterparties know whom they trust (bounded trust, not a leak); intermediaries learn adjacent endpoints; discovery of promoted claims depends on the indexers people choose to read.",
+  "joins_remaining_notes": [
+    "Counterparties know whom they trust (bounded trust, not a leak).",
+    "Intermediaries learn adjacent endpoints.",
+    "Reputation is promoted evidence chosen by the holder; discovery depends on the indexers people choose to read."
+  ],
+  "molt_route": [
+    "molt.intro.session",
+    "molt.drop.channel",
+    "molt.payment.intent",
+    "molt.declared.bounded_transfer_step"
+  ],
+  "manifest": {
+    "adapter_id": "baseline.platform_market",
+    "witnesses": [
+      {
+        "role": "Platform",
+        "operator": "market-platform",
+        "domains": ["market-platform-co"],
+        "learns_in": "RELATIONSHIP_IDENTITY | AMOUNT | DENOMINATION | TIME | CONTENT | OBLIGATION_ID",
+        "learns_out": "RELATIONSHIP_IDENTITY | AMOUNT | DENOMINATION | TIME | CONTENT | OBLIGATION_ID"
+      }
+    ],
+    "preserves": [
+      { "kind": "AMOUNT", "namespace": "usd.cents" },
+      { "kind": "TIME", "namespace": "time.unix" },
+      { "kind": "OBLIGATION_ID", "namespace": "market.order_id" }
+    ],
+    "latency_bound_secs": 60
+  }
+}

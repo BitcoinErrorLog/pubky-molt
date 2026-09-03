@@ -1,0 +1,51 @@
+{
+  "id": "molt.declared.lightning_path",
+  "description": "LightningPath (S6): a Lightning payment over an HTLC path. Manifest-only declaration; never executed. The payment hash opens and closes its segment inside this single adapter and does not cross past the close; amount and time do.",
+  "accepts": {
+    "Value": {
+      "network": "lightning",
+      "amount": { "asset": "BTC", "units": "sat", "value": 100000 },
+      "holder": "Self_"
+    }
+  },
+  "produces": {
+    "Value": {
+      "network": "lightning",
+      "amount": { "asset": "BTC", "units": "sat", "value": 100000 },
+      "holder": "Counterparty"
+    }
+  },
+  "manifest": {
+    "adapter_id": "molt.declared.lightning_path",
+    "witnesses": [
+      {
+        "role": "LnPeer",
+        "operator": "ln-peer",
+        "domains": ["lightning-network"],
+        "learns_in": "AMOUNT | TIME | TRANSACTION_ID | NETWORK_IDENTIFIER",
+        "learns_out": "AMOUNT | TIME | TRANSACTION_ID | NETWORK_IDENTIFIER"
+      }
+    ],
+    "preserves": [
+      { "kind": "AMOUNT", "namespace": "btc.sats" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 30
+  },
+  "quote": {
+    "costs": [{ "asset": "BTC", "units": "sat", "value": 50 }],
+    "latency_secs": 30
+  },
+  "recovery": "Atomic",
+  "segments": {
+    "opens": [
+      {
+        "id": "ln",
+        "carries": [{ "kind": "TRANSACTION_ID", "namespace": "lightning.payment_hash" }]
+      }
+    ],
+    "continues": [],
+    "closes": ["ln"]
+  },
+  "constraints": []
+}

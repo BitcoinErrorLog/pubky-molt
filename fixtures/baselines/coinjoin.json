@@ -1,0 +1,53 @@
+{
+  "name": "coinjoin",
+  "title": "A. Private payment vs CoinJoin",
+  "summary": "A denominated CoinJoin round. The coordinator witnesses inputs and outputs; the chain witnesses them forever. Anonymity-set dependent; ingress/egress joins by amount and timing remain for any chain observer.",
+  "assumptions": {
+    "colluding_set_size": 1,
+    "join_kinds": "ROOT_IDENTITY | RELATIONSHIP_IDENTITY | PAIRWISE_KEY | NETWORK_IDENTIFIER | SOURCE_ENDPOINT | DEST_ENDPOINT | TRANSACTION_ID | OBLIGATION_ID | CONTEXT_ID | RELATIONSHIP_LINK | ASSET | DENOMINATION | AMOUNT | TIME | CONTENT | CONTENT_SIZE | NETWORK_LOCATION | SESSION_IDENTIFIER",
+    "time_window_secs": 7200,
+    "treat_unknown_as_independent": false
+  },
+  "provenance": "Authors' model of a generic denominated equal-output CoinJoin (S11.A), 2026-09-03. Witness fields follow the disclosure any coordinator and any chain observer necessarily have.",
+  "omitted": [
+    "Anonymity-set size and its variance; the model shows the joins that remain regardless of set size.",
+    "Coordinator fee structure.",
+    "Global passive observers (out of threat model, S0)."
+  ],
+  "not_better_when": "You need bearer finality without any trusted counterparty. Then PaymentPluginBridge(onchain) is chosen and Molt only removes the negotiation-layer witnesses, not the chain's.",
+  "joins_remaining_notes": [
+    "The intermediary learns both relationship identities; reducing this belongs to whichever credit protocol implements the step.",
+    "Counterparties know each other by construction (bounded trust, not a leak).",
+    "Settlement later via PaymentPluginBridge(onchain) is a netted aggregate: no per-payment amount or time fingerprint."
+  ],
+  "molt_route": [
+    "molt.intro.session",
+    "molt.drop.channel",
+    "molt.payment.intent",
+    "molt.declared.bounded_transfer_step"
+  ],
+  "manifest": {
+    "adapter_id": "baseline.coinjoin",
+    "witnesses": [
+      {
+        "role": "Coordinator",
+        "operator": "coordinator-op",
+        "domains": ["coinjoin-coordinator"],
+        "learns_in": "NETWORK_IDENTIFIER | AMOUNT | TIME | NETWORK_LOCATION",
+        "learns_out": "NETWORK_IDENTIFIER | AMOUNT | TIME | NETWORK_LOCATION"
+      },
+      {
+        "role": "Chain",
+        "operator": "chain-observer",
+        "domains": ["chain-observer"],
+        "learns_in": "NETWORK_IDENTIFIER | AMOUNT | TIME",
+        "learns_out": "NETWORK_IDENTIFIER | AMOUNT | TIME"
+      }
+    ],
+    "preserves": [
+      { "kind": "AMOUNT", "namespace": "btc.sats" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 3600
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "payjoin",
+  "title": "B. Private payment vs PayJoin",
+  "summary": "A BIP78 PayJoin. Breaks the common-input heuristic between the two parties, but the receiver's HTTPS endpoint (BIP21 pj=) sees the payer's network location and time, the receiver learns the payer's input UTXOs, and the chain still learns identifiers, amount, and time.",
+  "assumptions": {
+    "colluding_set_size": 1,
+    "join_kinds": "ROOT_IDENTITY | RELATIONSHIP_IDENTITY | PAIRWISE_KEY | NETWORK_IDENTIFIER | SOURCE_ENDPOINT | DEST_ENDPOINT | TRANSACTION_ID | OBLIGATION_ID | CONTEXT_ID | RELATIONSHIP_LINK | ASSET | DENOMINATION | AMOUNT | TIME | CONTENT | CONTENT_SIZE | NETWORK_LOCATION | SESSION_IDENTIFIER",
+    "time_window_secs": 7200,
+    "treat_unknown_as_independent": false
+  },
+  "provenance": "Authors' model of BIP78 payjoin disclosure (S11.B), 2026-09-03.",
+  "omitted": [
+    "PayJoin version/transport variations.",
+    "Whether the receiver's endpoint is Tor-hosted.",
+    "Global passive observers (out of threat model, S0)."
+  ],
+  "not_better_when": "You settle on-chain anyway: with the on-chain path the chain evidence is unchanged; PayJoin then becomes one Molt adapter with an honest manifest rather than a competitor.",
+  "joins_remaining_notes": [
+    "This vector uses the credit path; with the on-chain path everything the chain would have seen remains.",
+    "The intermediary learns both relationship identities; reducing this belongs to whichever credit protocol implements the step.",
+    "Counterparties know each other by construction (bounded trust, not a leak)."
+  ],
+  "molt_route": [
+    "molt.intro.session",
+    "molt.drop.channel",
+    "molt.payment.intent",
+    "molt.declared.bounded_transfer_step"
+  ],
+  "manifest": {
+    "adapter_id": "baseline.payjoin",
+    "witnesses": [
+      {
+        "role": { "Other": "HttpsEndpoint" },
+        "operator": "pj-endpoint",
+        "domains": ["pj-endpoint"],
+        "learns_in": "NETWORK_LOCATION | TIME",
+        "learns_out": ""
+      },
+      {
+        "role": "Counterparty",
+        "operator": "payee",
+        "domains": [],
+        "learns_in": "NETWORK_LOCATION | TIME",
+        "learns_out": "NETWORK_IDENTIFIER | AMOUNT | TIME"
+      },
+      {
+        "role": "Chain",
+        "operator": "chain-observer",
+        "domains": ["chain-observer"],
+        "learns_in": "NETWORK_IDENTIFIER | AMOUNT | TIME",
+        "learns_out": "NETWORK_IDENTIFIER | AMOUNT | TIME"
+      }
+    ],
+    "preserves": [
+      { "kind": "AMOUNT", "namespace": "btc.sats" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 600
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "suite": "molt_route_v1",
+  "spec": "molt v10 — S5 (witnesses/segments/detach), S6 (route graph/planner), S7 (scorer)",
+  "constants": {
+    "confidence_weights": { "Exact": 1.0, "High": 0.8, "Statistical": 0.3 },
+    "set_weight": "1/|S|",
+    "detach_bonus": { "None": 0.0, "Unknown": 0.1, "Independent": 1.0, "CollusionBounded_base": 1.0, "CollusionBounded_per_k": 0.5 },
+    "severity": {
+      "ROOT_IDENTITY": 100.0,
+      "RELATIONSHIP_IDENTITY": 25.0,
+      "PAIRWISE_KEY": 20.0,
+      "identifier_kinds (NETWORK_IDENTIFIER|SESSION_IDENTIFIER|TRANSACTION_ID|OBLIGATION_ID)": 10.0,
+      "AMOUNT|TIME|DENOMINATION": 5.0,
+      "RELATIONSHIP_LINK": 2.0,
+      "CONTENT_SIZE and unlisted kinds": 1.0
+    },
+    "weights_presets": {
+      "FAST": { "continuity": 0.2, "cost": 0.3, "latency": 0.5 },
+      "CHEAP": { "continuity": 0.2, "cost": 0.6, "latency": 0.2 },
+      "PRIVATE": { "continuity": 0.7, "cost": 0.2, "latency": 0.1 },
+      "MAX_DETACH": { "continuity": 1.0, "cost": 0.0, "latency": 0.0 }
+    },
+    "fingerprint_formula": "BLAKE3(\"pubky-molt/fp/v1\" || namespace || canonical_value)[0..32]",
+    "default_assumptions": { "colluding_set_size": 1, "join_kinds": "all", "time_window_secs": 3600, "treat_unknown_as_independent": false },
+    "planner_limits_v1": { "max_depth": 4, "max_routes": 8 }
+  },
+  "fingerprints": [
+    {
+      "namespace": "lightning.payment_hash",
+      "canonical_value_hex": "616263",
+      "fingerprint": "6c1658803ba17ef8d0a2bb1efc25e4ecb655e40b09c5ce03e4f53c1dfd487573"
+    },
+    {
+      "namespace": "swap.hash",
+      "canonical_value_hex": "616263",
+      "fingerprint": "5e35584d24728514cec37120b1e84a446bf99a4feceabdd16e4b3b649874e682"
+    },
+    {
+      "namespace": "btc.sats",
+      "canonical_value_hex": "313030303030",
+      "fingerprint": "d26f5a0a7515214a3b714dfd4f57eb33090fa34fd6ce7475e3feff9d3ec4f699"
+    },
+    {
+      "namespace": "time.unix",
+      "canonical_value_hex": "31373637323235363030",
+      "fingerprint": "1f5f7196624dfabe826132063d95e8bb015d35a87b79f1b6868b2da09a4eb916"
+    }
+  ],
+  "detach_cases": [
+    {
+      "id": "segment_violation",
+      "summary": "An open segment whose carried spec is not in the preceding hop's preserves is a SegmentViolation, not a detach level.",
+      "expected": { "SegmentViolation": { "segment": "ln", "missing": [{ "kind": "TRANSACTION_ID", "namespace": "lightning.payment_hash" }] } }
+    },
+    {
+      "id": "spec_leaking_past_close",
+      "summary": "A TRANSACTION_ID spec crossing a boundary with no open segment covering it: DetachLevel::None.",
+      "expected": { "DetachLevel": "None" }
+    },
+    {
+      "id": "unknown_unregistered_witnesses",
+      "summary": "Witnesses with no known domain (no inline declaration, no registry claim): independence is UNKNOWN, not established. DetachLevel::Unknown; Independent only under treat_unknown_as_independent.",
+      "expected": { "DetachLevel": "Unknown" },
+      "expected_when_treated_independent": { "DetachLevel": "Independent" }
+    },
+    {
+      "id": "close_and_open_one_hop",
+      "summary": "One hop closes segment A while opening segment B; the boundary after the hop carries only B, and A's specs leak nowhere.",
+      "expected": { "DetachLevel": "Independent" }
+    }
+  ],
+  "plan_cases": [
+    {
+      "id": "refuse_counterparty_extension_bts",
+      "summary": "S10(a): BoundedTransferStep's output is Counterparty-held; the planner refuses to extend past it (but accepts it as the goal).",
+      "fixture": "fixtures/declared/bounded_transfer_step.json",
+      "expected_reject": "HolderNotSelf",
+      "expected_accept_as_goal": true
+    },
+    {
+      "id": "refuse_counterparty_extension_lightning",
+      "summary": "S10(a): LightningPath's output is Counterparty-held; the planner refuses to extend past it (but accepts it as the goal).",
+      "fixture": "fixtures/declared/lightning_path.json",
+      "expected_reject": "HolderNotSelf",
+      "expected_accept_as_goal": true
+    },
+    {
+      "id": "unclosed_segment",
+      "summary": "S10(b): a route ending with a segment still open is rejected.",
+      "expected_reject": { "UnclosedSegment": "step" }
+    },
+    {
+      "id": "duplicate_segment_id",
+      "summary": "S10(b): opening a segment id already used on the route is rejected.",
+      "expected_reject": { "DuplicateSegmentId": "ln" }
+    },
+    {
+      "id": "accept_submarine_swap_then_lightning",
+      "summary": "S10(c): SubmarineSwap -> LightningPath composes because the swap output is Self-held.",
+      "expected_hops": ["molt.declared.submarine_swap", "molt.declared.lightning_path"]
+    },
+    {
+      "id": "not_repeatable",
+      "summary": "S10(d): an adapter declaring NotRepeatable may appear at most once per route.",
+      "expected_reject": { "Constraint": "NotRepeatable" }
+    },
+    {
+      "id": "exclusive_adjacency",
+      "summary": "S10(d): an adapter declaring ExclusiveAdjacency(b) must be directly adjacent to b; as a final hop with no b predecessor it is rejected.",
+      "expected_reject": { "Constraint": { "ExclusiveAdjacency": "b" } }
+    },
+    {
+      "id": "route_through_custom_state",
+      "summary": "S10(e): the planner routes through RouteState::Custom (namespace + opaque descriptor + holder).",
+      "expected_hops": ["c1", "c2"],
+      "custom_namespace": "pubky.molt.rendezvous.v1"
+    },
+    {
+      "id": "custom_constraint_fail_closed",
+      "summary": "S10(f): an adapter declaring a Custom constraint with no registered evaluator is rejected UnsupportedConstraint (fail closed); with an evaluator it is evaluated.",
+      "expected_reject": { "UnsupportedConstraint": { "namespace": "pubky.molt.policy.v1", "adapter": "guarded" } }
+    },
+    {
+      "id": "close_and_open_one_hop_plans",
+      "summary": "S10/S5: a swap-shaped hop closes segment A while opening segment B in the same hop; the route plans.",
+      "expected_hops": ["open_a", "swap_a_to_b", "close_b"]
+    }
+  ],
+  "score_cases": [
+    {
+      "id": "single_asset_rejects_mixed",
+      "summary": "S10(g): a route quoting BTC+sats and USD+cents is rejected by SingleAsset(BTC,sat) with ScoreError::Cost.",
+      "expected_error": "Cost"
+    },
+    {
+      "id": "multi_asset_policy_reduces",
+      "summary": "S10(g): the same route is reduced by a test multi-asset policy (1 unit = 1 unit, test-only).",
+      "expected_reduced_cost": 15.0
+    }
+  ],
+  "trace_cases": [
+    {
+      "id": "confirm_exact_join",
+      "summary": "S10(h): two equal lightning.payment_hash fingerprints at boundaries 0 and 2 confirm a predicted Exact join.",
+      "spec": { "kind": "TRANSACTION_ID", "namespace": "lightning.payment_hash" },
+      "value_at_0_hex": "686173682d41",
+      "value_at_2_hex": "686173682d41",
+      "expected": "Confirmed"
+    },
+    {
+      "id": "refute_exact_join",
+      "summary": "S10(h): two different lightning.payment_hash fingerprints refute the predicted join.",
+      "spec": { "kind": "TRANSACTION_ID", "namespace": "lightning.payment_hash" },
+      "value_at_0_hex": "686173682d41",
+      "value_at_2_hex": "686173682d42",
+      "expected": "Refuted"
+    }
+  ],
+  "comparison_confidences": {
+    "summary": "S10/S7: score() on every S11 comparison, with JoinReport.confidence recorded (mirrors docs/COMPARISONS.md, which is pinned by the doc test).",
+    "coinjoin": { "eliminated": ["High", "High"], "remaining": ["Statistical", "Statistical"] },
+    "payjoin": { "eliminated": ["High"], "remaining": ["Statistical", "Statistical"] },
+    "vpn": { "eliminated": ["Exact"], "remaining": ["Statistical"] },
+    "onion_service": { "eliminated": ["High", "Exact"], "remaining": ["Statistical"] },
+    "platform_market": { "eliminated": ["Exact"], "remaining": ["Statistical", "Statistical"] }
+  }
+}

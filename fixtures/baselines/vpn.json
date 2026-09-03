@@ -1,0 +1,40 @@
+{
+  "name": "vpn",
+  "title": "C. Relationship transport vs VPN",
+  "summary": "A single VPN tunnel for all traffic. One operator learns a root-adjacent account (payment/login), the user's network location, every destination endpoint, and all timing. It moves the ISP's total view to one operator.",
+  "assumptions": {
+    "colluding_set_size": 1,
+    "join_kinds": "ROOT_IDENTITY | RELATIONSHIP_IDENTITY | PAIRWISE_KEY | NETWORK_IDENTIFIER | SOURCE_ENDPOINT | DEST_ENDPOINT | TRANSACTION_ID | OBLIGATION_ID | CONTEXT_ID | RELATIONSHIP_LINK | ASSET | DENOMINATION | AMOUNT | TIME | CONTENT | CONTENT_SIZE | NETWORK_LOCATION | SESSION_IDENTIFIER",
+    "time_window_secs": 3600,
+    "treat_unknown_as_independent": false
+  },
+  "provenance": "Authors' model of single-operator VPN disclosure (S11.C), 2026-09-03.",
+  "omitted": [
+    "Jurisdiction and logging-policy claims of any specific provider.",
+    "Multi-hop VPN products.",
+    "Global passive observers (out of threat model, S0)."
+  ],
+  "not_better_when": "Arbitrary web browsing. Molt is for Pubky-native interactions; it is not a general VPN replacement.",
+  "joins_remaining_notes": [
+    "Each relay sees the poller's network location; a TorTransport adapter (v2) can raise this boundary from Independent to CollusionBounded(1) under the declared assumptions.",
+    "Relays are chosen per (purpose, direction) so no relay sees more than one purpose of one relationship."
+  ],
+  "molt_route": ["molt.intro.session", "molt.drop.channel"],
+  "manifest": {
+    "adapter_id": "baseline.vpn",
+    "witnesses": [
+      {
+        "role": "Vpn",
+        "operator": "vpn-acme",
+        "domains": ["vpn-acme-co"],
+        "learns_in": "ROOT_IDENTITY | NETWORK_LOCATION | DEST_ENDPOINT | TIME",
+        "learns_out": "NETWORK_LOCATION | DEST_ENDPOINT | TIME"
+      }
+    ],
+    "preserves": [
+      { "kind": "DEST_ENDPOINT", "namespace": "net.endpoint" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 5
+  }
+}

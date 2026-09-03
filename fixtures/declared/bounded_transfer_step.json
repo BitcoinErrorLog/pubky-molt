@@ -1,0 +1,55 @@
+{
+  "id": "molt.declared.bounded_transfer_step",
+  "description": "BoundedTransferStep (S6): any transfer through exactly one intermediary bound by one receipt; non-BTC on purpose. Manifest-only declaration; never executed. Its receipt is preserved by a segment, the same mechanism Lightning uses for its payment hash. It cannot chain because its output is held by Counterparty, not because any rule names it. The intermediary's view of both endpoints is a property of this manifest, which Molt reports; it is not a Molt design decision.",
+  "accepts": {
+    "Value": {
+      "network": "credit-line",
+      "amount": { "asset": "USD", "units": "cent", "value": 2500 },
+      "holder": "Self_"
+    }
+  },
+  "produces": {
+    "Value": {
+      "network": "credit-line",
+      "amount": { "asset": "USD", "units": "cent", "value": 2500 },
+      "holder": "Counterparty"
+    }
+  },
+  "manifest": {
+    "adapter_id": "molt.declared.bounded_transfer_step",
+    "witnesses": [
+      {
+        "role": "Intermediary",
+        "operator": "clearing-house-a",
+        "domains": ["clearing-house-a"],
+        "learns_in": "RELATIONSHIP_IDENTITY | AMOUNT | DENOMINATION | TIME | OBLIGATION_ID",
+        "learns_out": "RELATIONSHIP_IDENTITY | AMOUNT | DENOMINATION | TIME | OBLIGATION_ID"
+      },
+      {
+        "role": "Counterparty",
+        "operator": "payee",
+        "domains": [],
+        "learns_in": "AMOUNT | DENOMINATION | TIME | OBLIGATION_ID",
+        "learns_out": "AMOUNT | DENOMINATION | TIME | OBLIGATION_ID"
+      }
+    ],
+    "preserves": [],
+    "latency_bound_secs": 5
+  },
+  "quote": {
+    "costs": [{ "asset": "USD", "units": "cent", "value": 10 }],
+    "latency_secs": 5
+  },
+  "recovery": { "BoundedAttributable": { "max_exposed_legs": 1 } },
+  "segments": {
+    "opens": [
+      {
+        "id": "step",
+        "carries": [{ "kind": "OBLIGATION_ID", "namespace": "credit.receipt_id" }]
+      }
+    ],
+    "continues": [],
+    "closes": ["step"]
+  },
+  "constraints": []
+}

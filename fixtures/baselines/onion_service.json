@@ -1,0 +1,48 @@
+{
+  "name": "onion_service",
+  "title": "D. Rendezvous vs Tor onion service",
+  "summary": "A stable .onion address is a stable network identifier: continuity by design. HsDirs see descriptor publication times; introduction points and guards allow timing correlation on live circuits; interaction requires both parties online.",
+  "assumptions": {
+    "colluding_set_size": 1,
+    "join_kinds": "ROOT_IDENTITY | RELATIONSHIP_IDENTITY | PAIRWISE_KEY | NETWORK_IDENTIFIER | SOURCE_ENDPOINT | DEST_ENDPOINT | TRANSACTION_ID | OBLIGATION_ID | CONTEXT_ID | RELATIONSHIP_LINK | ASSET | DENOMINATION | AMOUNT | TIME | CONTENT | CONTENT_SIZE | NETWORK_LOCATION | SESSION_IDENTIFIER",
+    "time_window_secs": 3600,
+    "treat_unknown_as_independent": false
+  },
+  "provenance": "Authors' model of Tor onion-service rendezvous disclosure (S11.D), 2026-09-03.",
+  "omitted": [
+    "Guard rotation and its (slow) continuity improvement.",
+    "v3 onion service authorization extensions.",
+    "Global passive observers (out of threat model, S0); Tor's own live-circuit timing correlation is noted in the summary."
+  ],
+  "not_better_when": "You need location protection: Tor protects location, Molt protects continuity. Composed, each covers the other's gap.",
+  "joins_remaining_notes": [
+    "Relays see the poller's network location unless a Tor adapter is on the route.",
+    "The root is public because Pubky wants it to be; discovery is already decentralized via PKARR.",
+    "No live-circuit timing: messages sit in a queue (asynchronous store-and-forward)."
+  ],
+  "molt_route": ["molt.intro.session", "molt.drop.channel"],
+  "manifest": {
+    "adapter_id": "baseline.onion_service",
+    "witnesses": [
+      {
+        "role": "HsDir",
+        "operator": "tor-hsdir",
+        "domains": ["tor-hsdir"],
+        "learns_in": "NETWORK_IDENTIFIER | TIME",
+        "learns_out": "NETWORK_IDENTIFIER | TIME"
+      },
+      {
+        "role": "TorGuard",
+        "operator": "tor-guard",
+        "domains": ["tor-guard-x"],
+        "learns_in": "NETWORK_LOCATION | TIME",
+        "learns_out": "TIME"
+      }
+    ],
+    "preserves": [
+      { "kind": "NETWORK_IDENTIFIER", "namespace": "tor.onion_address" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 1
+  }
+}

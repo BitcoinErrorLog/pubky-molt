@@ -1,0 +1,58 @@
+{
+  "id": "molt.declared.submarine_swap",
+  "description": "SubmarineSwap (S6): a submarine swap from on-chain bitcoin into Lightning. Manifest-only declaration; never executed. The swap hash opens and closes its segment inside this adapter; amount and time cross, which is the fingerprint that makes 1:1 swaps a weak detach.",
+  "accepts": {
+    "Value": {
+      "network": "bitcoin",
+      "amount": { "asset": "BTC", "units": "sat", "value": 100000 },
+      "holder": "Self_"
+    }
+  },
+  "produces": {
+    "Value": {
+      "network": "lightning",
+      "amount": { "asset": "BTC", "units": "sat", "value": 100000 },
+      "holder": "Self_"
+    }
+  },
+  "manifest": {
+    "adapter_id": "molt.declared.submarine_swap",
+    "witnesses": [
+      {
+        "role": "Chain",
+        "operator": "chain-observer",
+        "domains": ["chain-observer"],
+        "learns_in": "NETWORK_IDENTIFIER | AMOUNT | TIME",
+        "learns_out": ""
+      },
+      {
+        "role": "LnPeer",
+        "operator": "ln-peer",
+        "domains": ["lightning-network"],
+        "learns_in": "",
+        "learns_out": "AMOUNT | TIME | NETWORK_IDENTIFIER"
+      }
+    ],
+    "preserves": [
+      { "kind": "AMOUNT", "namespace": "btc.sats" },
+      { "kind": "TIME", "namespace": "time.unix" }
+    ],
+    "latency_bound_secs": 600
+  },
+  "quote": {
+    "costs": [{ "asset": "BTC", "units": "sat", "value": 500 }],
+    "latency_secs": 600
+  },
+  "recovery": { "Refundable": { "window_secs": 3600 } },
+  "segments": {
+    "opens": [
+      {
+        "id": "swap",
+        "carries": [{ "kind": "TRANSACTION_ID", "namespace": "swap.hash" }]
+      }
+    ],
+    "continues": [],
+    "closes": ["swap"]
+  },
+  "constraints": []
+}
