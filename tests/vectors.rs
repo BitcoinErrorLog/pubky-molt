@@ -1,6 +1,6 @@
 //! Executes `tests/vectors/molt_route_v1.json`: the recorded expectations for
 //! S5 (`detach_level`), S6 (`plan`), and S7 (`score`) from S10 of the molt
-//! v12 spec. Each case is rebuilt in Rust; the JSON file pins the expected
+//! v14 spec. Each case is rebuilt in Rust; the JSON file pins the expected
 //! outcomes, constants, and fingerprints.
 
 use pubky_molt::comparisons::{load_baselines, load_declared, run_comparison};
@@ -69,6 +69,17 @@ fn expect_detach_level(expected: &Value, actual: DetachLevel) {
         .expect("DetachLevel string");
     let got = format!("{actual:?}");
     assert_eq!(got, want, "detach level mismatch");
+}
+
+#[test]
+fn vector_suite_header_names_current_spec() {
+    let v = vectors();
+    assert_eq!(v["suite"].as_str().expect("suite"), "molt_route_v1");
+    let spec = v["spec"].as_str().expect("spec");
+    assert!(
+        spec.starts_with("molt v14 —"),
+        "vector suite cites a stale spec version: {spec:?}"
+    );
 }
 
 #[test]

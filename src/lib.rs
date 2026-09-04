@@ -162,13 +162,16 @@ pub fn from_hex(s: &str) -> Result<Vec<u8>, MoltError> {
 pub const PURPOSE_ID_MAX_LEN: usize = 64;
 
 /// A versioned, registered domain-separation namespace with the grammar
-/// `pubky.molt.<app>.v<N>` (lowercase ASCII, `.`-separated segments of
-/// `[a-z0-9_]`, at most 64 bytes). Not free text: anything outside the
-/// grammar is rejected on construction.
+/// `pubky.molt.<app>.v<N>`: exactly 4 `.`-separated segments, lowercase
+/// ASCII, `<app>` a non-empty `[a-z0-9]+` segment, `N ≥ 1` with no leading
+/// zeros, at most [`PURPOSE_ID_MAX_LEN`] bytes. Not free text: anything
+/// outside the grammar is rejected on construction.
 ///
 /// `PurposeId` scopes channel derivation in the crypto crate and names
 /// application-defined states and constraints here. This crate defines its
-/// own `PurposeId` so it depends on no other Pubky crate.
+/// own `PurposeId` so it depends on no other Pubky crate; the grammar is
+/// byte-identical to pubky-crypto's (`src/molt/derive.rs`), so a purpose
+/// accepted here is always derivable there and vice versa.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PurposeId(String);
 
@@ -181,24 +184,44 @@ impl PurposeId {
     pub const PAYKIT: &'static str = "pubky.molt.paykit.v1";
 
     /// Parse and validate a purpose id against the grammar
-    /// `pubky.molt.<app>.v<N>`.
+    /// `pubky.molt.<app>.v<N>` (exactly 4 segments; `<app>` `[a-z0-9]+`;
+    /// `v<N>` with `N ≥ 1` and no leading zeros — `v0`/`v01` are rejected).
     pub fn parse(s: &str) -> Result<Self, MoltError> {
-        validate_namespace_shape(s)
-            .map_err(|e| MoltError::InvalidPurposeId(format!("{s:?}: {e}")))?;
-        let segs: Vec<&str> = s.split('.').collect();
-        if segs.len() < 4 || segs[0] != "pubky" || segs[1] != "molt" {
-            return Err(MoltError::InvalidPurposeId(format!(
-                "{s:?}: must match pubky.molt.<app>.v<N>"
-            )));
+        let bad = |why: &str| MoltError::InvalidPurposeId(format!("{s:?}: {why}"));
+        if s.len() > PURPOSE_ID_MAX_LEN {
+            return Err(bad("exceeds 64 bytes"));
         }
-        let last = segs[segs.len() - 1];
-        let ver = last.strip_prefix('v').ok_or_else(|| {
-            MoltError::InvalidPurposeId(format!("{s:?}: final segment must be v<N>"))
-        })?;
-        if ver.is_empty() || !ver.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(MoltError::InvalidPurposeId(format!(
-                "{s:?}: final segment must be v<N>"
-            )));
+        if !s.is_ascii()
+            || s.bytes()
+                .any(|b| !(b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.'))
+        {
+            return Err(bad("must be lowercase ASCII [a-z0-9.]"));
+        }
+        let parts: Vec<&str> = s.split('.').collect();
+        // Exactly: "pubky" "molt" <app> "v<N>"
+        if parts.len() != 4 || parts[0] != "pubky" || parts[1] != "molt" {
+            return Err(bad("must match pubky.molt.<app>.v<N>"));
+        }
+        let app = parts[2];
+        if app.is_empty()
+            || !app
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            return Err(bad("<app> must be [a-z0-9]+"));
+        }
+        let digits = parts[3]
+            .strip_prefix('v')
+            .ok_or_else(|| bad("final segment must be v<N>"))?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad("final segment must be v<N>"));
+        }
+        // N ≥ 1; reject "v0" and leading-zero forms like "v01".
+        let n: u64 = digits
+            .parse()
+            .map_err(|_| bad("final segment must be v<N>"))?;
+        if n == 0 || digits.len() != n.to_string().len() {
+            return Err(bad("version must be ≥ 1 with no leading zeros"));
         }
         Ok(PurposeId(s.to_string()))
     }
@@ -241,12 +264,15 @@ impl<'de> Deserialize<'de> for PurposeId {
     }
 }
 
-/// Validate the `PurposeId`-like namespace shape used by
+/// Validate the relaxed `PurposeId`-like namespace shape used **only** by
 /// [`witness::CorrelatorSpec`] namespaces: lowercase ASCII, `.`-separated
 /// segments of `[a-z0-9_]`, no empty segments, at most
 /// [`PURPOSE_ID_MAX_LEN`] bytes. Unlike [`PurposeId::parse`], no
 /// `pubky.molt.` prefix or `v<N>` suffix is required (e.g.
-/// `lightning.payment_hash`, `btc.sats`).
+/// `lightning.payment_hash`, `btc.sats`). This relaxed shape exists solely
+/// for correlator namespaces — a correlator namespace is a label for value
+/// continuity, not a domain-separation purpose — and must not be used where
+/// a [`PurposeId`] is required.
 pub fn validate_namespace(s: &str) -> Result<(), MoltError> {
     validate_namespace_shape(s).map_err(|e| MoltError::InvalidNamespace(format!("{s:?}: {e}")))
 }
@@ -313,7 +339,7 @@ mod tests {
             PurposeId::HELLO,
             PurposeId::INTRO,
             PurposeId::PAYKIT,
-            "pubky.molt.my_app.v12",
+            "pubky.molt.myapp2.v2",
         ] {
             let p = PurposeId::parse(ok).expect(ok);
             assert_eq!(p.as_str(), ok);
@@ -323,15 +349,26 @@ mod tests {
 
     #[test]
     fn purpose_id_rejects_outside_grammar() {
+        // Mirrors the rejection suite of pubky-crypto's
+        // `molt/derive.rs::purpose_id_rejects_free_form`.
         for bad in [
             "",
-            "pubky.molt.paykit",      // no version
-            "pubky.molt.paykit.vX",   // non-numeric version
-            "lightning.payment_hash", // missing pubky.molt prefix
-            "Pubky.molt.paykit.v1",   // uppercase
-            "pubky.molt.pay kit.v1",  // space
-            "pubky.molt..v1",         // empty segment
-            "pubky.molt.paykit.v1.extra",
+            "request",                    // free-form
+            "pubky.molt.paykit",          // no version
+            "pubky.molt.paykit.vX",       // non-numeric version
+            "Pubky.molt.paykit.v1",       // uppercase
+            "pubky.molt.paykit.v0",       // N must be >= 1
+            "pubky.molt.paykit.v01",      // no leading zeros
+            "pubky.molt.paykit.v",        // empty version digits
+            "pubky.molt.paykit.v1.extra", // exactly 4 segments
+            "pubky.molt..v1",             // empty app segment
+            "pubky.molt.pay-kit.v1",      // '-' outside [a-z0-9]
+            "pubky.molt.my_app.v1",       // '_' outside [a-z0-9]
+            "pubky.other.paykit.v1",      // second segment must be "molt"
+            "pubky.molt.paykit.v1 ",      // trailing space
+            "pubky.molt.pay kit.v1",      // space
+            "lightning.payment_hash",     // missing pubky.molt prefix
+            &"pubky.molt.".repeat(20),    // > 64 bytes
         ] {
             assert!(PurposeId::parse(bad).is_err(), "accepted {bad:?}");
         }

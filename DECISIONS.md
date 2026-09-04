@@ -1,20 +1,23 @@
 # DECISIONS
 
-Spec-ambiguity resolutions for the `pubky-molt` implementation of molt v12
+Spec-ambiguity resolutions for the `pubky-molt` implementation of molt v14
 sections S5, S6, S7, and S11. Each entry records the conservative reading
-chosen and why. Section numbers refer to the v12 plan.
+chosen and why. Section numbers refer to the v14 plan.
 
 ## Types and encoding
 
 1. **`PurposeId` is defined locally.** S2 specifies `PurposeId` for
    `pubky-crypto`, but S6 (`RouteState::Custom`, `RouteConstraint::Custom`)
    needs it here and this crate may not depend on any Pubky crate. We define
-   an equivalent `PurposeId` with the same grammar (`pubky.molt.<app>.v<N>`,
-   lowercase ASCII `[a-z0-9_]`, `.`-separated, ≤ 64 bytes, validated on
-   construction). `CorrelatorSpec.namespace` uses the relaxed
-   "PurposeId-like" shape (no prefix/version requirement) because the spec's
-   own examples (`lightning.payment_hash`, `btc.sats`) do not match the
-   strict grammar.
+   an equivalent `PurposeId` whose grammar is **byte-identical to
+   pubky-crypto's** (`pubky.molt.<app>.v<N>`: exactly 4 `.`-separated
+   lowercase-ASCII segments, `<app>` a non-empty `[a-z0-9]+` segment — no
+   underscore — `N ≥ 1` with no leading zeros, ≤ 64 bytes, validated on
+   construction), so a purpose accepted here is always derivable there and
+   vice versa. `CorrelatorSpec.namespace` uses the relaxed "PurposeId-like"
+   shape (no prefix/version requirement, `_` allowed) because the spec's own
+   examples (`lightning.payment_hash`, `btc.sats`) do not match the strict
+   grammar; that relaxed shape is used for correlator namespaces only.
 
 2. **Fingerprint formula is spec-exact.**
    `BLAKE3("pubky-molt/fp/v1" || namespace || canonical_value)` with no
@@ -188,7 +191,7 @@ chosen and why. Section numbers refer to the v12 plan.
     `MOLT_COMPARISONS_REGENERATE=1 cargo test --doc`**; the default doc-test
     path fails on any drift from the committed file.
 
-## Review fixes (v12)
+## Review fixes (v14)
 
 31. **Per-hop ACTIVE segment set in the scorer.** Hop `i`'s own in→out
     crossing and hop-local join computation exclude the carried specs of:
@@ -236,8 +239,43 @@ chosen and why. Section numbers refer to the v12 plan.
     not better, the vector says so". `docs/COMPARISONS.md` was regenerated
     via the pinned doc test.
 
-36. **Housekeeping.** Stale `v10` references updated to `v12`
-    (`tests/vectors.rs`, `tests/vectors/molt_route_v1.json`, this file).
-    `attempted_stub` renamed to `attempted_partial_route` in
-    `src/planner.rs`: it builds a partial route for rejection reporting, not
-    a stub, and the old name trips stub-hygiene greps.
+36. **Housekeeping.** Stale spec-version references updated to the current
+    v14 spec (`tests/vectors.rs`, `tests/vectors/molt_route_v1.json`, this
+    file; the vector `spec` field is now asserted by
+    `vector_suite_header_names_current_spec`). `attempted_stub` renamed to
+    `attempted_partial_route` in `src/planner.rs`: it builds a partial route
+    for rejection reporting, not a stub, and the old name trips stub-hygiene
+    greps.
+
+## External audit fixes (2026-09-04)
+
+37. **`PurposeId::parse` adopts pubky-crypto's grammar exactly** (audit
+    SF-1). The two validators had diverged: this crate accepted ≥ 4 segments,
+    `[a-z0-9_]` app segments, and `v0`/`v01` versions, while pubky-crypto
+    requires exactly 4 segments, `[a-z0-9]+`, and `N ≥ 1` with no leading
+    zeros. `PurposeId` is a domain-separation security namespace (S2), so a
+    purpose the routing core accepted could be one the crypto layer rejected
+    for channel derivation. The grammar is now byte-identical
+    (`src/lib.rs::PurposeId::parse`), the rejection tests mirror
+    pubky-crypto's `derive.rs` suite, and the relaxed `validate_namespace`
+    shape remains only for `CorrelatorSpec.namespace` (documented on the
+    function). Entry 1 was corrected accordingly — it previously claimed the
+    grammars were "the same" when they were not.
+
+38. **Rejected partial routes satisfy the `Route` invariant** (audit N-2).
+    `attempted_partial_route` appended the attempted hop/state but not an
+    `open_segments_at` entry, so rejected partials carried
+    `open_segments_at.len() == hops.len() - 1`, violating the type's
+    documented invariant. The partial is now padded with the pre-attempt open
+    set — semantically exact, since a failed hop changed nothing — keeping
+    the attempted hop and produced state for diagnosability. The regression
+    test asserts the invariant on accepted routes and on rejected partials of
+    every reachable shape, and asserts the padding preserves the pre-attempt
+    open set.
+
+39. **All spec-version citations name v14** (audit SF-4). The frozen spec is
+    `molt_v14.plan.md`; every citation in `src/`, `tests/`, `fixtures/`,
+    `docs/`, and this file was updated to v14, including the
+    `tests/vectors/molt_route_v1.json` `spec` field, which is now pinned by
+    the `vector_suite_header_names_current_spec` test so future spec bumps
+    cannot silently drift.

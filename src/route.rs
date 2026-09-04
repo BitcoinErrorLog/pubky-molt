@@ -240,7 +240,10 @@ pub trait Adapter: Send + Sync {
 /// `states.len() == hops.len() + 1`. `open_segments_at[i]` is the set of
 /// segments open across the boundary *after* hop `i` (between hop `i` and hop
 /// `i + 1`), so `open_segments_at.len() == hops.len()` and the last entry of
-/// a complete route is empty.
+/// a complete route is empty. The invariant holds for every route the
+/// planner emits, including rejected partials: a rejected partial records the
+/// attempted hop and produced state, and its final `open_segments_at` entry
+/// is the pre-attempt open set (the failed hop changed nothing).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Route {
     /// Adapter ids, in order.

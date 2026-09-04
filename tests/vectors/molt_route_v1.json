@@ -1,7 +1,7 @@
 {
   "version": 1,
   "suite": "molt_route_v1",
-  "spec": "molt v12 — S5 (witnesses/segments/detach), S6 (route graph/planner), S7 (scorer)",
+  "spec": "molt v14 — S5 (witnesses/segments/detach), S6 (route graph/planner), S7 (scorer)",
   "constants": {
     "confidence_weights": { "Exact": 1.0, "High": 0.8, "Statistical": 0.3 },
     "set_weight": "1/|S|",

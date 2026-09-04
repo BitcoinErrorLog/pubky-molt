@@ -323,8 +323,12 @@ pub fn plan(
     result
 }
 
-/// The partial route recording a failed extension attempt (includes the
-/// attempted hop and produced state for diagnosability).
+/// The partial route recording a failed extension attempt: the attempted hop
+/// and produced state are appended for diagnosability, and `open_segments_at`
+/// is padded with the pre-attempt open set so the [`Route`] invariant
+/// (`open_segments_at.len() == hops.len()`) holds for rejected partials too.
+/// The failed hop changed nothing, so the open set across its "boundary" is
+/// exactly the set that was open before the attempt.
 fn attempted_partial_route(r: &Route, ad: &dyn Adapter, next: &RouteState) -> Route {
     Route {
         hops: r
@@ -339,7 +343,12 @@ fn attempted_partial_route(r: &Route, ad: &dyn Adapter, next: &RouteState) -> Ro
             .cloned()
             .chain(std::iter::once(next.clone()))
             .collect(),
-        open_segments_at: r.open_segments_at.clone(),
+        open_segments_at: r
+            .open_segments_at
+            .iter()
+            .cloned()
+            .chain(std::iter::once(r.open_segments().to_vec()))
+            .collect(),
     }
 }
 
@@ -850,6 +859,88 @@ mod tests {
             .any(|(_, r)| matches!(r, RejectReason::DepthExceeded)));
         let res2 = plan(&s0, &s2, &adapters, &no_evals(), &v1());
         assert_eq!(res2.routes.len(), 1);
+    }
+
+    /// Every route the planner emits — accepted or rejected partial — must
+    /// satisfy the documented `Route` invariant:
+    /// `states.len() == hops.len() + 1` and
+    /// `open_segments_at.len() == hops.len()`.
+    fn assert_route_invariant(r: &Route) {
+        assert_eq!(
+            r.states.len(),
+            r.hops.len() + 1,
+            "states/hops length mismatch: {r:?}"
+        );
+        assert_eq!(
+            r.open_segments_at.len(),
+            r.hops.len(),
+            "open_segments_at/hops length mismatch: {r:?}"
+        );
+    }
+
+    #[test]
+    fn route_invariant_holds_for_accepted_routes_and_rejected_partials() {
+        // s0 --a--> s1 --closer(closes "nope")--> s2: the second hop fails
+        // with CloseWithoutOpen, producing a rejected partial of depth 2.
+        let s0 = value("s0", Holder::Self_);
+        let s1 = value("s1", Holder::Self_);
+        let s2 = value("s2", Holder::Self_);
+        let a = TestAdapter::new("a", vec![s0.clone()], s1.clone());
+        let mut closer = TestAdapter::new("closer", vec![s1.clone()], s2.clone());
+        closer.effects.closes = vec![SegmentId("nope".into())];
+        let adapters: Vec<&dyn Adapter> = vec![&a, &closer];
+        let res = plan(&s0, &s2, &adapters, &no_evals(), &v1());
+        assert!(res.routes.is_empty());
+        assert_eq!(res.rejected.len(), 1);
+        let (partial, reason) = &res.rejected[0];
+        assert!(matches!(reason, RejectReason::CloseWithoutOpen(id) if id.0 == "nope"));
+        assert_route_invariant(partial);
+        // The rejected partial records the attempted hop and produced state…
+        assert_eq!(partial.hops, vec!["a", "closer"]);
+        assert_eq!(partial.states, vec![s0.clone(), s1.clone(), s2.clone()]);
+        // …and its final open_segments_at entry is the pre-attempt open set
+        // (empty here, since the failed hop changed nothing).
+        assert!(partial.open_segments_at.last().expect("padded").is_empty());
+
+        // The pre-attempt open set is preserved when it is non-empty: opener
+        // opens "s1seg" at hop 1; the failed close attempt at hop 2 must pad
+        // with the still-open segment, not drop it.
+        let seg = Segment {
+            id: SegmentId("s1seg".into()),
+            carries: vec![CorrelatorSpec::new(Field::TRANSACTION_ID, "swap.hash").expect("spec")],
+        };
+        let mut opener = TestAdapter::new("opener", vec![s0.clone()], s1.clone());
+        opener.effects.opens = vec![seg.clone()];
+        opener.manifest.preserves =
+            vec![CorrelatorSpec::new(Field::TRANSACTION_ID, "swap.hash").expect("spec")];
+        let adapters2: Vec<&dyn Adapter> = vec![&opener, &closer];
+        let res2 = plan(&s0, &s2, &adapters2, &no_evals(), &v1());
+        let (partial2, _) = res2
+            .rejected
+            .iter()
+            .find(|(_, r)| matches!(r, RejectReason::CloseWithoutOpen(_)))
+            .expect("close-without-open rejection");
+        assert_route_invariant(partial2);
+        assert_eq!(
+            partial2.open_segments_at.last().expect("padded"),
+            &vec![seg]
+        );
+
+        // An UnclosedSegment rejection at finalization also satisfies the
+        // invariant (the goal is reached with the segment still open).
+        let res3 = plan(&s0, &s1, &adapters2, &no_evals(), &v1());
+        let (partial3, _) = res3
+            .rejected
+            .iter()
+            .find(|(_, r)| matches!(r, RejectReason::UnclosedSegment(_)))
+            .expect("unclosed-segment rejection");
+        assert_route_invariant(partial3);
+        // And the accepted-route invariant is covered by every other test;
+        // assert it here on a plain successful plan for completeness.
+        let b = TestAdapter::new("b", vec![s0.clone()], s1.clone());
+        let res4 = plan(&s0, &s1, &[&b as &dyn Adapter], &no_evals(), &v1());
+        assert_eq!(res4.routes.len(), 1);
+        assert_route_invariant(&res4.routes[0]);
     }
 
     #[test]
